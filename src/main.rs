@@ -1,9 +1,17 @@
 #![allow(dead_code)]
 
+use crate::card::CardDefinition;
+mod card;
+
 fn main() {
     println!("Hello, world!");
-    let d1 = vec![Card(), Card(), Card()];
-    let d2 = vec![Card(), Card(), Card(), Card()];
+    let d1 = vec![
+        Card { id:0, owner_id:0, definition: &card::mountain},
+        Card { id:1, owner_id:0, definition: &card::mountain},
+        Card { id:2, owner_id:0, definition: &card::mountain}];
+    let d2 = vec![
+        Card { id:3, owner_id:1, definition: &card::mountain},
+        Card { id:4, owner_id:1, definition: &card::mountain}];
     let mut consumers: Vec<Box<dyn MessageConsumer>> = vec![Box::new(MessageLogger())];
     let game = duel(User{name:"Leo".to_string()}, d1, 
                 User{name:"Marc".to_string() }, d2, &mut consumers);
@@ -29,31 +37,14 @@ struct User{
     name : String
 }
 
-/*
+type CardID = usize;
+
 #[derive(Debug)]
-struct MechanicCard{
-    isToken : bool
+struct Card<'a> {
+    id: CardID,
+    owner_id: PlayerID,
+    definition: &'a CardDefinition
 }
-
-#[derive(Debug)]
-struct CardArt ();
-
-#[derive(Debug)]
-struct Card {
-    mechanics : MechanicCard,
-    art : CardArt
-}
-
-#[derive(Debug)]
-struct GameCard {
-    card: Card/* ,
-    owner: &Player*/
-}
-
-*/
-
-#[derive(Debug)]
-struct Card ();
 
 type PlayerID = usize;
 #[derive(Debug)]
@@ -157,8 +148,4 @@ fn duel(user1 : User, deck1 : Vec<Card>, user2 : User, deck2 : Vec<Card>, consum
     }
 
     game
-}
-
-struct Permanent {
-    card: Card
 }
