@@ -4,14 +4,25 @@ fn main() {
     println!("Hello, world!");
     let d1 = vec![Card(), Card(), Card()];
     let d2 = vec![Card(), Card(), Card(), Card()];
+    let mut consumers: Vec<Box<dyn MessageConsumer>> = vec![Box::new(MessageLogger())];
     let game = duel(User{name:"Leo".to_string()}, d1, 
-                User{name:"Marc".to_string() }, d2);
+                User{name:"Marc".to_string() }, d2, &mut consumers);
     println!("{:?}", game);
 }
 
 trait MessageConsumer {
-    fn handle_message(&mut self, _:Message) -> Result<(), ()>;
+    fn handle_message(&mut self, _: &Message) -> Result<(), ()>;
 }
+
+struct MessageLogger ();
+
+impl MessageConsumer for MessageLogger {
+    fn handle_message(&mut self, msg: &Message) -> Result<(), ()> {
+        println!("{:?}", msg);
+        Ok(())
+    }
+}
+
 
 #[derive(Debug)]
 struct User{
@@ -73,26 +84,27 @@ enum Message {
 }
 
 impl MessageConsumer for Game {
-    fn handle_message(&mut self, message: Message) -> Result<(), ()> {
-        match message{
+    fn handle_message(&mut self, message: &Message) -> Result<(), ()> {
+        match message {
             Message::CreatePlayer {id, name} => {
-                if self.players.len() != id {
+                if self.players.len() != *id {
                     Err(())
                 } else {
-                    let player = Player {id:id, name:name};
+                    let player = Player {id:*id, name:name.clone()};
                     self.players.push(player);
                     Ok(())
                 }
             }
-            Message::Substep (s) => {self.substep = s; Ok(())}
-            Message::Step (s) => {self.step = s; Ok(())}
-            Message::BeginTurn(pid) => {self.active_player_id = pid; Ok(())}
-            Message::GetPriority(pid) => {self.priority_player_id = pid; Ok(())}
+            Message::Substep (s) => {self.substep = *s; Ok(())}
+            Message::Step (s) => {self.step = *s; Ok(())}
+            Message::BeginTurn(pid) => {self.active_player_id = *pid; Ok(())}
+            Message::GetPriority(pid) => {self.priority_player_id = *pid; Ok(())}
         }
     }
 }
 
 #[derive(Debug)]
+#[derive(Clone, Copy)]
 enum Substep {
     SetupGame,
     CheckStateBasedActions,
@@ -101,6 +113,7 @@ enum Substep {
 }
 
 #[derive(Debug)]
+#[derive(Clone, Copy)]
 enum Step {
     Untap, 
     Upkeep, 
@@ -117,10 +130,12 @@ enum Step {
 }
 
 fn next_step(game: &Game) -> Vec<Message> {
-    vec![]
+    match game.substep {
+        _ => vec![]
+    }
 }
 
-fn duel(user1 : User, deck1 : Vec<Card>, user2 : User, deck2 : Vec<Card>) -> Game {
+fn duel(user1 : User, deck1 : Vec<Card>, user2 : User, deck2 : Vec<Card>, consumers: &mut Vec<Box<dyn MessageConsumer>>) -> Game {
     let mut game = Game { 
         players: vec![], 
         substep: Substep::SetupGame, 
@@ -128,8 +143,19 @@ fn duel(user1 : User, deck1 : Vec<Card>, user2 : User, deck2 : Vec<Card>) -> Gam
         active_player_id: 0,
         priority_player_id: 0
     };
-    game.handle_message(Message::CreatePlayer{id:0, name:user1.name.clone()}).expect("Error creating Player 1");
-    game.handle_message(Message::CreatePlayer{id:1, name:user2.name.clone()}).expect("Error creating Player 2");
+
+    let init_msg = vec![
+        Message::CreatePlayer{id:0, name:user1.name.clone()},
+        Message::CreatePlayer{id:1, name:user2.name.clone()}
+    ];
+
+    for msg in &init_msg {
+        game.handle_message(msg).unwrap();
+        for consumer in &mut *consumers {
+            let _ = consumer.handle_message(msg);
+        }
+    }
+
     game
 }
 
