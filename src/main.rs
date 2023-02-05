@@ -5,16 +5,15 @@ mod card;
 
 fn main() {
     println!("Hello, world!");
-    let d1 = vec![
-        Card { id:0, owner_id:0, definition: &card::mountain},
-        Card { id:1, owner_id:0, definition: &card::mountain},
-        Card { id:2, owner_id:0, definition: &card::mountain}];
-    let d2 = vec![
-        Card { id:3, owner_id:1, definition: &card::mountain},
-        Card { id:4, owner_id:1, definition: &card::mountain}];
+    let d1 = card::Deck(vec![(101, 10)]);
+    let d2 = card::Deck(vec![(101, 10)]);
     let mut consumers: Vec<Box<dyn MessageConsumer>> = vec![Box::new(MessageLogger())];
+    let card_repository = card::load_cards();
     let game = duel(User{name:"Leo".to_string()}, d1, 
-                User{name:"Marc".to_string() }, d2, &mut consumers);
+                User{name:"Marc".to_string() }, d2, 
+                &mut consumers,
+                &card_repository
+            );
     println!("{:?}", game);
 }
 
@@ -48,42 +47,80 @@ struct Card<'a> {
 
 type PlayerID = usize;
 #[derive(Debug)]
-struct Player {
+struct Player<'a> {
     id : PlayerID,
-    name : String
- /*   library : Vec<Card>,
-    hand : Vec<Card>,
-    graveyard : Vec<Card>,*/
+    name : String,
+    library : Vec<Card<'a>>,
+    hand : Vec<Card<'a>>,
+    graveyard : Vec<Card<'a>>
+}
+
+impl<'a> Player<'a> {
+    fn new(id:PlayerID, name:String) -> Player<'a> {
+        Player {id:id, name:name, library:Vec::new(), hand:Vec::new(), graveyard:Vec::new()}
+    }
 }
 
 #[derive(Debug)]
-struct Game {
-    players : Vec<Player>,
+struct Game<'a> {
+    players : Vec<Player<'a>>,
     substep : Substep,
     step : Step,
     active_player_id : usize,
     priority_player_id : usize,
+    card_repository : &'a card::CardRepository,
+    next_id : usize
+}
+
+impl<'a> Game<'a> {
+    fn new(card_repository: &'a card::CardRepository) -> Game {
+        Game { 
+            players: vec![], 
+            substep: Substep::SetupGame, 
+            step: Step::Untap,
+            active_player_id: 0,
+            priority_player_id: 0,
+            card_repository: card_repository,
+            next_id: 1001
+        }
+    }
+
+    fn get_id(&mut self) -> usize {
+        let res = self.next_id;
+        self.next_id += 1;
+        res
+    }
 }
 
 #[derive(Debug)]
 enum Message {
     CreatePlayer {id: PlayerID, name: String},
+    AddCard {id: CardID, owner_id: PlayerID, def_id: card::CardDefID},
     Substep (Substep),
     Step (Step),
     BeginTurn (PlayerID),
     GetPriority (PlayerID)
 }
 
-impl MessageConsumer for Game {
+impl<'a> MessageConsumer for Game<'a> {
     fn handle_message(&mut self, message: &Message) -> Result<(), ()> {
         match message {
             Message::CreatePlayer {id, name} => {
                 if self.players.len() != *id {
                     Err(())
                 } else {
-                    let player = Player {id:*id, name:name.clone()};
+                    let player = Player::new(*id, name.clone());
                     self.players.push(player);
                     Ok(())
+                }
+            }
+            Message::AddCard { id, owner_id, def_id } => {
+                match self.card_repository.get(def_id) {
+                    Some(definition) => {
+                        let card = Card {id:*id, owner_id:*owner_id, definition:definition};
+                        self.players[*owner_id].library.push(card);
+                        Ok(())},
+                    None => Err(())
                 }
             }
             Message::Substep (s) => {self.substep = *s; Ok(())}
@@ -126,19 +163,25 @@ fn next_step(game: &Game) -> Vec<Message> {
     }
 }
 
-fn duel(user1 : User, deck1 : Vec<Card>, user2 : User, deck2 : Vec<Card>, consumers: &mut Vec<Box<dyn MessageConsumer>>) -> Game {
-    let mut game = Game { 
-        players: vec![], 
-        substep: Substep::SetupGame, 
-        step: Step::Untap,
-        active_player_id: 0,
-        priority_player_id: 0
-    };
+fn duel<'a>(user1 : User, deck1 : card::Deck, user2 : User, deck2 : card::Deck, consumers: &mut Vec<Box<dyn MessageConsumer>>, card_repository: &'a card::CardRepository ) -> Game<'a> {
+    let mut game = Game::new(card_repository);
 
-    let init_msg = vec![
+    let mut init_msg = vec![
         Message::CreatePlayer{id:0, name:user1.name.clone()},
         Message::CreatePlayer{id:1, name:user2.name.clone()}
     ];
+
+    for (def_id, count) in deck1.0 {
+        for _ in 0..count {
+            init_msg.push(Message::AddCard { id: game.get_id(), owner_id: 0, def_id: def_id})
+        }
+    }
+
+    for (def_id, count) in deck2.0 {
+        for _ in 0..count {
+            init_msg.push(Message::AddCard { id: game.get_id(), owner_id: 1, def_id: def_id})
+        }
+    }
 
     for msg in &init_msg {
         game.handle_message(msg).unwrap();
