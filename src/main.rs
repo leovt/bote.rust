@@ -2,19 +2,26 @@
 
 use crate::card::CardDefinition;
 mod card;
-use rand::thread_rng;
 use rand::seq::SliceRandom; // Vec.shuffle
+use rand::thread_rng;
 
 fn main() {
     let d1 = card::Deck(vec![(101, 10)]);
     let d2 = card::Deck(vec![(101, 10)]);
     let mut consumers: Vec<Box<dyn MessageConsumer>> = vec![Box::new(MessageLogger())];
     let card_repository = card::load_cards();
-    let game = duel(User{name:"Leo".to_string()}, d1, 
-                User{name:"Marc".to_string() }, d2, 
-                &mut consumers,
-                &card_repository
-            );
+    let game = duel(
+        User {
+            name: "Leo".to_string(),
+        },
+        d1,
+        User {
+            name: "Marc".to_string(),
+        },
+        d2,
+        &mut consumers,
+        &card_repository,
+    );
     println!("{:?}", game);
 }
 
@@ -22,7 +29,7 @@ trait MessageConsumer {
     fn handle_message(&mut self, _: &Message) -> Result<(), HandleError>;
 }
 
-struct MessageLogger ();
+struct MessageLogger();
 
 impl MessageConsumer for MessageLogger {
     fn handle_message(&mut self, msg: &Message) -> Result<(), HandleError> {
@@ -31,10 +38,9 @@ impl MessageConsumer for MessageLogger {
     }
 }
 
-
 #[derive(Debug)]
-struct User{
-    name : String
+struct User {
+    name: String,
 }
 
 type CardID = usize;
@@ -43,47 +49,54 @@ type CardID = usize;
 struct Card<'a> {
     id: CardID,
     owner_id: PlayerID,
-    definition: &'a CardDefinition
+    definition: &'a CardDefinition,
 }
 
 type PlayerID = usize;
 #[derive(Debug)]
 struct Player<'a> {
-    id : PlayerID,
-    name : String,
-    library : Vec<Card<'a>>,
-    hand : Vec<Card<'a>>,
-    graveyard : Vec<Card<'a>>,
-    has_drawn_from_empty : bool,
+    id: PlayerID,
+    name: String,
+    library: Vec<Card<'a>>,
+    hand: Vec<Card<'a>>,
+    graveyard: Vec<Card<'a>>,
+    has_drawn_from_empty: bool,
 }
 
 impl<'a> Player<'a> {
-    fn new(id:PlayerID, name:String) -> Player<'a> {
-        Player {id:id, name:name, library:Vec::new(), hand:Vec::new(), graveyard:Vec::new(), has_drawn_from_empty: false}
+    fn new(id: PlayerID, name: String) -> Player<'a> {
+        Player {
+            id: id,
+            name: name,
+            library: Vec::new(),
+            hand: Vec::new(),
+            graveyard: Vec::new(),
+            has_drawn_from_empty: false,
+        }
     }
 }
 
 #[derive(Debug)]
 struct Game<'a> {
-    players : Vec<Player<'a>>,
-    substep : Substep,
-    step : Step,
-    active_player_id : usize,
-    priority_player_id : usize,
-    card_repository : &'a card::CardRepository,
-    next_id : usize
+    players: Vec<Player<'a>>,
+    substep: Substep,
+    step: Step,
+    active_player_id: usize,
+    priority_player_id: usize,
+    card_repository: &'a card::CardRepository,
+    next_id: usize,
 }
 
 impl<'a> Game<'a> {
     fn new(card_repository: &'a card::CardRepository) -> Game {
-        Game { 
-            players: vec![], 
-            substep: Substep::InitialShuffle, 
+        Game {
+            players: vec![],
+            substep: Substep::InitialShuffle,
             step: Step::Untap,
             active_player_id: 0,
             priority_player_id: 0,
             card_repository: card_repository,
-            next_id: 1001
+            next_id: 1001,
         }
     }
 
@@ -96,15 +109,22 @@ impl<'a> Game<'a> {
 
 #[derive(Debug)]
 enum Message {
-    CreatePlayer {id: PlayerID, name: String},
-    AddCard {id: CardID, owner_id: PlayerID, def_id: card::CardDefID},
-    Substep (Substep),
-    Step (Step),
-    BeginTurn (PlayerID),
-    GetPriority (PlayerID),
-    ShuffleLibrary (PlayerID),
+    CreatePlayer {
+        id: PlayerID,
+        name: String,
+    },
+    AddCard {
+        id: CardID,
+        owner_id: PlayerID,
+        def_id: card::CardDefID,
+    },
+    Substep(Substep),
+    Step(Step),
+    BeginTurn(PlayerID),
+    GetPriority(PlayerID),
+    ShuffleLibrary(PlayerID),
     DrawCard(PlayerID, CardID),
-    DrawFromEmpty(PlayerID)
+    DrawFromEmpty(PlayerID),
 }
 
 #[derive(Debug)]
@@ -117,7 +137,7 @@ enum HandleError {
 impl<'a> MessageConsumer for Game<'a> {
     fn handle_message(&mut self, message: &Message) -> Result<(), HandleError> {
         match message {
-            Message::CreatePlayer {id, name} => {
+            Message::CreatePlayer { id, name } => {
                 if self.players.len() != *id {
                     Err(HandleError::PlayerIdError)
                 } else {
@@ -126,36 +146,53 @@ impl<'a> MessageConsumer for Game<'a> {
                     Ok(())
                 }
             }
-            Message::AddCard { id, owner_id, def_id } => {
-                match self.card_repository.get(def_id) {
-                    Some(definition) => {
-                        let card = Card {id:*id, owner_id:*owner_id, definition:definition};
-                        self.players[*owner_id].library.push(card);
-                        Ok(())},
-                    None => Err(HandleError::CardDefIdError)
+            Message::AddCard {
+                id,
+                owner_id,
+                def_id,
+            } => match self.card_repository.get(def_id) {
+                Some(definition) => {
+                    let card = Card {
+                        id: *id,
+                        owner_id: *owner_id,
+                        definition: definition,
+                    };
+                    self.players[*owner_id].library.push(card);
+                    Ok(())
                 }
+                None => Err(HandleError::CardDefIdError),
+            },
+            Message::Substep(s) => {
+                self.substep = *s;
+                Ok(())
             }
-            Message::Substep (s) => {self.substep = *s; Ok(())}
-            Message::Step (s) => {self.step = *s; Ok(())}
-            Message::BeginTurn(pid) => {self.active_player_id = *pid; Ok(())}
-            Message::GetPriority(pid) => {self.priority_player_id = *pid; Ok(())}
+            Message::Step(s) => {
+                self.step = *s;
+                Ok(())
+            }
+            Message::BeginTurn(pid) => {
+                self.active_player_id = *pid;
+                Ok(())
+            }
+            Message::GetPriority(pid) => {
+                self.priority_player_id = *pid;
+                Ok(())
+            }
             Message::ShuffleLibrary(pid) => {
                 self.players[*pid].library.shuffle(&mut thread_rng());
                 Ok(())
             }
-            Message::DrawCard(pid, cid) => {
-                match self.players[*pid].library.pop() {
-                    Some(card) => {
-                        if card.id == *cid {
-                            self.players[*pid].hand.push(card);
-                            Ok(())
-                        } else {
-                            Err(HandleError::CardIdError)
-                        }
+            Message::DrawCard(pid, cid) => match self.players[*pid].library.pop() {
+                Some(card) => {
+                    if card.id == *cid {
+                        self.players[*pid].hand.push(card);
+                        Ok(())
+                    } else {
+                        Err(HandleError::CardIdError)
                     }
-                    None => Err(HandleError::CardIdError)
                 }
-            }
+                None => Err(HandleError::CardIdError),
+            },
             Message::DrawFromEmpty(pid) => {
                 self.players[*pid].has_drawn_from_empty = true;
                 Ok(())
@@ -164,9 +201,7 @@ impl<'a> MessageConsumer for Game<'a> {
     }
 }
 
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Substep {
     InitialShuffle,
     InitialDrawCards,
@@ -176,11 +211,10 @@ enum Substep {
     GameEnded,
 }
 
-#[derive(Debug)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Step {
-    Untap, 
-    Upkeep, 
+    Untap,
+    Upkeep,
     Draw,
     PrecombatMain,
     BeginCombat,
@@ -190,15 +224,15 @@ enum Step {
     EndOfCombat,
     PostcombatMain,
     End,
-    Cleanup
+    Cleanup,
 }
 
-fn try_draw_cards(player:&Player, count:usize) -> Vec<Message> {
+fn try_draw_cards(player: &Player, count: usize) -> Vec<Message> {
     let mut msg = Vec::new();
     let n = player.library.len();
     for i in 0..count {
         if i < n {
-            let card = &player.library[n-1-i];
+            let card = &player.library[n - 1 - i];
             msg.push(Message::DrawCard(player.id, card.id));
         } else {
             msg.push(Message::DrawFromEmpty(player.id));
@@ -208,10 +242,10 @@ fn try_draw_cards(player:&Player, count:usize) -> Vec<Message> {
     msg
 }
 
-fn try_draw_card(player:&Player) -> Message {
+fn try_draw_card(player: &Player) -> Message {
     match player.library.last() {
         Some(card) => Message::DrawCard(player.id, card.id),
-        None => Message::DrawFromEmpty(player.id)
+        None => Message::DrawFromEmpty(player.id),
     }
 }
 
@@ -230,28 +264,51 @@ fn next_step(game: &Game) -> Vec<Message> {
             }
             msg.push(Message::Substep(Substep::GameEnded));
         }
-        _ => {msg.push(Message::Substep(Substep::GameEnded));}
+        _ => {
+            msg.push(Message::Substep(Substep::GameEnded));
+        }
     };
     msg
 }
 
-fn duel<'a>(user1 : User, deck1 : card::Deck, user2 : User, deck2 : card::Deck, consumers: &mut Vec<Box<dyn MessageConsumer>>, card_repository: &'a card::CardRepository ) -> Game<'a> {
+fn duel<'a>(
+    user1: User,
+    deck1: card::Deck,
+    user2: User,
+    deck2: card::Deck,
+    consumers: &mut Vec<Box<dyn MessageConsumer>>,
+    card_repository: &'a card::CardRepository,
+) -> Game<'a> {
     let mut game = Game::new(card_repository);
 
     let mut init_msg = vec![
-        Message::CreatePlayer{id:0, name:user1.name.clone()},
-        Message::CreatePlayer{id:1, name:user2.name.clone()}
+        Message::CreatePlayer {
+            id: 0,
+            name: user1.name.clone(),
+        },
+        Message::CreatePlayer {
+            id: 1,
+            name: user2.name.clone(),
+        },
     ];
 
     for (def_id, count) in deck1.0 {
         for _ in 0..count {
-            init_msg.push(Message::AddCard { id: game.get_id(), owner_id: 0, def_id: def_id})
+            init_msg.push(Message::AddCard {
+                id: game.get_id(),
+                owner_id: 0,
+                def_id: def_id,
+            })
         }
     }
 
     for (def_id, count) in deck2.0 {
         for _ in 0..count {
-            init_msg.push(Message::AddCard { id: game.get_id(), owner_id: 1, def_id: def_id})
+            init_msg.push(Message::AddCard {
+                id: game.get_id(),
+                owner_id: 1,
+                def_id: def_id,
+            })
         }
     }
 
