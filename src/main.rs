@@ -61,6 +61,8 @@ struct Player<'a> {
     hand: Vec<Card<'a>>,
     graveyard: Vec<Card<'a>>,
     has_drawn_from_empty: bool,
+    has_lost: bool,
+    life: i32,
 }
 
 impl<'a> Player<'a> {
@@ -72,6 +74,8 @@ impl<'a> Player<'a> {
             hand: Vec::new(),
             graveyard: Vec::new(),
             has_drawn_from_empty: false,
+            has_lost: false,
+            life: 20,
         }
     }
 }
@@ -125,6 +129,8 @@ enum Message {
     ShuffleLibrary(PlayerID),
     DrawCard(PlayerID, CardID),
     DrawFromEmpty(PlayerID),
+    PlayerLoses(PlayerID),
+    PlayerWins(PlayerID),
 }
 
 #[derive(Debug)]
@@ -197,6 +203,14 @@ impl<'a> MessageConsumer for Game<'a> {
                 self.players[*pid].has_drawn_from_empty = true;
                 Ok(())
             }
+            Message::PlayerLoses(pid) => {
+                self.players[*pid].has_lost = true;
+                Ok(())
+            }
+            Message::PlayerWins(_pid) => {
+                // Do Nothing
+                Ok(())
+            }
         }
     }
 }
@@ -249,6 +263,33 @@ fn try_draw_card(player: &Player) -> Message {
     }
 }
 
+fn state_based_actions(game: &Game) -> Vec<Message> {
+    let mut msg = Vec::new();
+    for player in &game.players {
+        if player.life <= 0 || player.has_drawn_from_empty {
+            msg.push(Message::PlayerLoses(player.id));
+        }
+    }
+    // TODO: put all creatures whose damage exceeds their toughness into the graveyard
+    // TODO: put unattached enchantements into the graveyard
+    // Note: Contrary to magic the gathering winning is also a state based action
+    let nb_losing_players = game.players.iter().filter(|p| p.has_lost).count();
+    if nb_losing_players == game.players.len() {
+        // all have lost
+        msg.push(Message::Substep(Substep::GameEnded));
+    } else if nb_losing_players == game.players.len() - 1 {
+        let winner = game
+            .players
+            .iter()
+            .filter(|p| !p.has_lost)
+            .next()
+            .expect("there must be a winner");
+        msg.push(Message::PlayerWins(winner.id));
+        msg.push(Message::Substep(Substep::GameEnded));
+    }
+    msg
+}
+
 fn next_step(game: &Game) -> Vec<Message> {
     let mut msg = Vec::new();
     match game.substep {
@@ -262,7 +303,15 @@ fn next_step(game: &Game) -> Vec<Message> {
             for player in &game.players {
                 msg.extend(try_draw_cards(player, 7))
             }
-            msg.push(Message::Substep(Substep::GameEnded));
+            msg.push(Message::Substep(Substep::CheckStateBasedActions));
+        }
+        Substep::CheckStateBasedActions => {
+            let actions = state_based_actions(game);
+            if actions.len() > 0 {
+                msg.extend(actions);
+            } else {
+                msg.push(Message::Substep(Substep::GameEnded));
+            }
         }
         _ => {
             msg.push(Message::Substep(Substep::GameEnded));
