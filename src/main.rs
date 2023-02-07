@@ -2,9 +2,10 @@
 
 use crate::card::CardDefinition;
 mod card;
+use rand::thread_rng;
+use rand::seq::SliceRandom; // Vec.shuffle
 
 fn main() {
-    println!("Hello, world!");
     let d1 = card::Deck(vec![(101, 10)]);
     let d2 = card::Deck(vec![(101, 10)]);
     let mut consumers: Vec<Box<dyn MessageConsumer>> = vec![Box::new(MessageLogger())];
@@ -18,13 +19,13 @@ fn main() {
 }
 
 trait MessageConsumer {
-    fn handle_message(&mut self, _: &Message) -> Result<(), ()>;
+    fn handle_message(&mut self, _: &Message) -> Result<(), HandleError>;
 }
 
 struct MessageLogger ();
 
 impl MessageConsumer for MessageLogger {
-    fn handle_message(&mut self, msg: &Message) -> Result<(), ()> {
+    fn handle_message(&mut self, msg: &Message) -> Result<(), HandleError> {
         println!("{:?}", msg);
         Ok(())
     }
@@ -52,12 +53,13 @@ struct Player<'a> {
     name : String,
     library : Vec<Card<'a>>,
     hand : Vec<Card<'a>>,
-    graveyard : Vec<Card<'a>>
+    graveyard : Vec<Card<'a>>,
+    has_drawn_from_empty : bool,
 }
 
 impl<'a> Player<'a> {
     fn new(id:PlayerID, name:String) -> Player<'a> {
-        Player {id:id, name:name, library:Vec::new(), hand:Vec::new(), graveyard:Vec::new()}
+        Player {id:id, name:name, library:Vec::new(), hand:Vec::new(), graveyard:Vec::new(), has_drawn_from_empty: false}
     }
 }
 
@@ -76,7 +78,7 @@ impl<'a> Game<'a> {
     fn new(card_repository: &'a card::CardRepository) -> Game {
         Game { 
             players: vec![], 
-            substep: Substep::SetupGame, 
+            substep: Substep::InitialShuffle, 
             step: Step::Untap,
             active_player_id: 0,
             priority_player_id: 0,
@@ -99,15 +101,25 @@ enum Message {
     Substep (Substep),
     Step (Step),
     BeginTurn (PlayerID),
-    GetPriority (PlayerID)
+    GetPriority (PlayerID),
+    ShuffleLibrary (PlayerID),
+    DrawCard(PlayerID, CardID),
+    DrawFromEmpty(PlayerID)
+}
+
+#[derive(Debug)]
+enum HandleError {
+    PlayerIdError,
+    CardIdError,
+    CardDefIdError,
 }
 
 impl<'a> MessageConsumer for Game<'a> {
-    fn handle_message(&mut self, message: &Message) -> Result<(), ()> {
+    fn handle_message(&mut self, message: &Message) -> Result<(), HandleError> {
         match message {
             Message::CreatePlayer {id, name} => {
                 if self.players.len() != *id {
-                    Err(())
+                    Err(HandleError::PlayerIdError)
                 } else {
                     let player = Player::new(*id, name.clone());
                     self.players.push(player);
@@ -120,24 +132,48 @@ impl<'a> MessageConsumer for Game<'a> {
                         let card = Card {id:*id, owner_id:*owner_id, definition:definition};
                         self.players[*owner_id].library.push(card);
                         Ok(())},
-                    None => Err(())
+                    None => Err(HandleError::CardDefIdError)
                 }
             }
             Message::Substep (s) => {self.substep = *s; Ok(())}
             Message::Step (s) => {self.step = *s; Ok(())}
             Message::BeginTurn(pid) => {self.active_player_id = *pid; Ok(())}
             Message::GetPriority(pid) => {self.priority_player_id = *pid; Ok(())}
+            Message::ShuffleLibrary(pid) => {
+                self.players[*pid].library.shuffle(&mut thread_rng());
+                Ok(())
+            }
+            Message::DrawCard(pid, cid) => {
+                match self.players[*pid].library.pop() {
+                    Some(card) => {
+                        if card.id == *cid {
+                            self.players[*pid].hand.push(card);
+                            Ok(())
+                        } else {
+                            Err(HandleError::CardIdError)
+                        }
+                    }
+                    None => Err(HandleError::CardIdError)
+                }
+            }
+            Message::DrawFromEmpty(pid) => {
+                self.players[*pid].has_drawn_from_empty = true;
+                Ok(())
+            }
         }
     }
 }
 
 #[derive(Debug)]
 #[derive(Clone, Copy)]
+#[derive(PartialEq)]
 enum Substep {
-    SetupGame,
+    InitialShuffle,
+    InitialDrawCards,
     CheckStateBasedActions,
     CheckTriggers,
     ResolveStack,
+    GameEnded,
 }
 
 #[derive(Debug)]
@@ -157,10 +193,46 @@ enum Step {
     Cleanup
 }
 
-fn next_step(game: &Game) -> Vec<Message> {
-    match game.substep {
-        _ => vec![]
+fn try_draw_cards(player:&Player, count:usize) -> Vec<Message> {
+    let mut msg = Vec::new();
+    let n = player.library.len();
+    for i in 0..count {
+        if i < n {
+            let card = &player.library[n-1-i];
+            msg.push(Message::DrawCard(player.id, card.id));
+        } else {
+            msg.push(Message::DrawFromEmpty(player.id));
+            break;
+        }
     }
+    msg
+}
+
+fn try_draw_card(player:&Player) -> Message {
+    match player.library.last() {
+        Some(card) => Message::DrawCard(player.id, card.id),
+        None => Message::DrawFromEmpty(player.id)
+    }
+}
+
+fn next_step(game: &Game) -> Vec<Message> {
+    let mut msg = Vec::new();
+    match game.substep {
+        Substep::InitialShuffle => {
+            for player in &game.players {
+                msg.push(Message::ShuffleLibrary(player.id));
+            }
+            msg.push(Message::Substep(Substep::InitialDrawCards));
+        }
+        Substep::InitialDrawCards => {
+            for player in &game.players {
+                msg.extend(try_draw_cards(player, 7))
+            }
+            msg.push(Message::Substep(Substep::GameEnded));
+        }
+        _ => {msg.push(Message::Substep(Substep::GameEnded));}
+    };
+    msg
 }
 
 fn duel<'a>(user1 : User, deck1 : card::Deck, user2 : User, deck2 : card::Deck, consumers: &mut Vec<Box<dyn MessageConsumer>>, card_repository: &'a card::CardRepository ) -> Game<'a> {
@@ -190,5 +262,13 @@ fn duel<'a>(user1 : User, deck1 : card::Deck, user2 : User, deck2 : card::Deck, 
         }
     }
 
+    while game.substep != Substep::GameEnded {
+        for msg in next_step(&game) {
+            game.handle_message(&msg).unwrap();
+            for consumer in &mut *consumers {
+                let _ = consumer.handle_message(&msg);
+            }
+        }
+    }
     game
 }
