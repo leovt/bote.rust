@@ -62,6 +62,7 @@ struct Player<'a> {
     graveyard: Vec<Card<'a>>,
     has_drawn_from_empty: bool,
     has_lost: bool,
+    has_passed: bool,
     life: i32,
 }
 
@@ -75,6 +76,7 @@ impl<'a> Player<'a> {
             graveyard: Vec::new(),
             has_drawn_from_empty: false,
             has_lost: false,
+            has_passed: false,
             life: 20,
         }
     }
@@ -131,6 +133,9 @@ enum Message {
     DrawFromEmpty(PlayerID),
     PlayerLoses(PlayerID),
     PlayerWins(PlayerID),
+    PlayerHasPriority(PlayerID),
+    PlayerPasses(PlayerID),
+    PriorityEnded,
 }
 
 #[derive(Debug)]
@@ -211,6 +216,20 @@ impl<'a> MessageConsumer for Game<'a> {
                 // Do Nothing
                 Ok(())
             }
+            Message::PlayerHasPriority(pid) => {
+                self.priority_player_id = *pid;
+                Ok(())
+            }
+            Message::PlayerPasses(pid) => {
+                self.players[*pid].has_passed = true;
+                Ok(())
+            }
+            Message::PriorityEnded => {
+                for p in self.players.iter_mut() {
+                    p.has_passed = false;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -221,6 +240,7 @@ enum Substep {
     InitialDrawCards,
     CheckStateBasedActions,
     CheckTriggers,
+    PlayerPriority,
     ResolveStack,
     GameEnded,
 }
@@ -290,6 +310,14 @@ fn state_based_actions(game: &Game) -> Vec<Message> {
     msg
 }
 
+fn start_player_priority(game: &Game) -> Vec<Message> {
+    let mut msg = Vec::new();
+    assert!(game.players.iter().all(|p| !p.has_passed));
+    msg.push(Message::Substep(Substep::PlayerPriority));
+    msg.push(Message::PlayerHasPriority(game.active_player_id));
+    msg
+}
+
 fn next_step(game: &Game) -> Vec<Message> {
     let mut msg = Vec::new();
     match game.substep {
@@ -310,7 +338,23 @@ fn next_step(game: &Game) -> Vec<Message> {
             if actions.len() > 0 {
                 msg.extend(actions);
             } else {
-                msg.push(Message::Substep(Substep::GameEnded));
+                msg.extend(start_player_priority(game));
+            }
+        }
+        Substep::PlayerPriority => {
+            let priority_player = &game.players[game.priority_player_id];
+            if priority_player.has_passed {
+                let next_player_id = (game.priority_player_id + 1) % game.players.len();
+                if next_player_id == game.active_player_id {
+                    assert!(game.players.iter().all(|p| p.has_passed));
+                    msg.push(Message::PriorityEnded);
+                    msg.push(Message::Substep(Substep::ResolveStack))
+                } else {
+                    msg.push(Message::PlayerHasPriority(next_player_id));
+                }
+            } else {
+                // todo: ask player what they want to do
+                msg.push(Message::PlayerPasses(priority_player.id));
             }
         }
         _ => {
