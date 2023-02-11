@@ -82,6 +82,17 @@ impl<'a> Player<'a> {
     }
 }
 
+type SpellID = usize;
+#[derive(Debug)]
+struct Spell {
+    id: SpellID,
+}
+impl Spell {
+    fn resolve(&self) -> Vec<Message> {
+        Vec::new()
+    }
+}
+
 #[derive(Debug)]
 struct Game<'a> {
     players: Vec<Player<'a>>,
@@ -90,6 +101,7 @@ struct Game<'a> {
     active_player_id: usize,
     priority_player_id: usize,
     card_repository: &'a card::CardRepository,
+    stack: Vec<Spell>,
     next_id: usize,
 }
 
@@ -102,6 +114,7 @@ impl<'a> Game<'a> {
             active_player_id: 0,
             priority_player_id: 0,
             card_repository: card_repository,
+            stack: Vec::new(),
             next_id: 1001,
         }
     }
@@ -136,6 +149,7 @@ enum Message {
     PlayerHasPriority(PlayerID),
     PlayerPasses(PlayerID),
     PriorityEnded,
+    ResolveSpell(SpellID),
 }
 
 #[derive(Debug)]
@@ -230,6 +244,10 @@ impl<'a> MessageConsumer for Game<'a> {
                 }
                 Ok(())
             }
+            Message::ResolveSpell(sid) => match self.stack.pop() {
+                Some(spell) if spell.id == *sid => Ok(()),
+                _ => Err(HandleError::CardIdError),
+            },
         }
     }
 }
@@ -242,6 +260,7 @@ enum Substep {
     CheckTriggers,
     PlayerPriority,
     ResolveStack,
+    EndOfStep,
     GameEnded,
 }
 
@@ -357,6 +376,15 @@ fn next_step(game: &Game) -> Vec<Message> {
                 msg.push(Message::PlayerPasses(priority_player.id));
             }
         }
+        Substep::ResolveStack => match game.stack.last() {
+            Some(spell) => {
+                msg.push(Message::ResolveSpell(spell.id));
+                msg.extend(spell.resolve());
+            }
+            None => {
+                msg.push(Message::Substep(Substep::EndOfStep));
+            }
+        },
         _ => {
             msg.push(Message::Substep(Substep::GameEnded));
         }
