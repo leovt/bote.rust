@@ -80,6 +80,10 @@ impl<'a> Player<'a> {
             life: 20,
         }
     }
+
+    fn max_hand_size(&self) -> i32 {
+        7
+    }
 }
 
 type SpellID = usize;
@@ -102,6 +106,8 @@ struct Game<'a> {
     priority_player_id: usize,
     card_repository: &'a card::CardRepository,
     stack: Vec<Spell>,
+    battlefield: Vec<()>,
+    attackers: Vec<()>,
     next_id: usize,
 }
 
@@ -115,6 +121,8 @@ impl<'a> Game<'a> {
             priority_player_id: 0,
             card_repository: card_repository,
             stack: Vec::new(),
+            battlefield: Vec::new(),
+            attackers: Vec::new(),
             next_id: 1001,
         }
     }
@@ -256,6 +264,7 @@ impl<'a> MessageConsumer for Game<'a> {
 enum Substep {
     InitialShuffle,
     InitialDrawCards,
+    BeginOfStep,
     CheckStateBasedActions,
     CheckTriggers,
     PlayerPriority,
@@ -271,6 +280,7 @@ enum Step {
     Draw,
     PrecombatMain,
     BeginCombat,
+    DeclareAttackers,
     DeclareBlockers,
     FirstStrikeDamage,
     SecondStrikeDamage,
@@ -385,6 +395,58 @@ fn next_step(game: &Game) -> Vec<Message> {
                 msg.push(Message::Substep(Substep::EndOfStep));
             }
         },
+        Substep::EndOfStep => {
+            // todo: empty mana pool
+            use Step::*;
+            msg.push(Message::Step(match game.step {
+                Untap => Upkeep,
+                Upkeep => Draw,
+                Draw => PrecombatMain,
+                PrecombatMain => BeginCombat,
+                BeginCombat => DeclareAttackers,
+                DeclareAttackers => {
+                    if game.attackers.len() > 0 {
+                        DeclareBlockers
+                    } else {
+                        EndOfCombat
+                    }
+                }
+                DeclareBlockers => FirstStrikeDamage,
+                FirstStrikeDamage => SecondStrikeDamage,
+                SecondStrikeDamage => EndOfCombat,
+                EndOfCombat => PostcombatMain,
+                PostcombatMain => End,
+                End => Cleanup,
+                Cleanup => Untap,
+            }));
+            msg.push(Message::Substep(Substep::BeginOfStep));
+        }
+        Substep::BeginOfStep => {
+            match game.step {
+                Step::Untap => {
+                    // Untap all permanents controlled by active player
+                    msg.push(Message::Substep(Substep::CheckStateBasedActions));
+                }
+                Step::Draw => {
+                    let player = &game.players[game.active_player_id];
+                    msg.extend(try_draw_cards(player, 1));
+                    msg.push(Message::Substep(Substep::CheckStateBasedActions));
+                }
+                Step::Cleanup => {
+                    let player = &game.players[game.active_player_id];
+                    let number_to_discard = player.hand.len() as i32 - player.max_hand_size();
+                    if number_to_discard > 0 {
+                        // msg.extend(Message::QueryPlayerAction(Action::Discard())
+                        msg.push(Message::Substep(Substep::EndOfStep));
+                    } else {
+                        // all damage is removed
+                        // until end of turn ends
+                        msg.push(Message::Substep(Substep::EndOfStep));
+                    }
+                }
+                _ => msg.push(Message::Substep(Substep::CheckStateBasedActions))
+            }
+        }
         _ => {
             msg.push(Message::Substep(Substep::GameEnded));
         }
