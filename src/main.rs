@@ -38,6 +38,51 @@ impl MessageConsumer for MessageLogger {
     }
 }
 
+#[derive(Debug, Clone)]
+enum PriorityAction {
+    Pass,
+}
+
+#[derive(Debug, Clone)]
+enum Query {
+    Discard(Vec<CardID>, i32),
+    PriorityAction(Vec<PriorityAction>),
+}
+
+#[derive(Debug)]
+enum Answer {
+    Discard(Vec<CardID>),
+    PriorityAction(PriorityAction),
+}
+
+fn validate_answer(query: &Query, answer: &Answer) -> bool {
+    match (query, answer) {
+        (Query::Discard(cards, n), Answer::Discard(selected)) => {
+            selected.len() as i32 == *n && selected.iter().all(|c| cards.contains(c))
+        }
+        _ => false,
+    }
+}
+
+fn random_answer(query: &Query) -> Answer {
+    let answer = match query {
+        Query::Discard(cards, n) => Answer::Discard(
+            cards
+                .choose_multiple(&mut thread_rng(), *n as usize)
+                .cloned()
+                .collect::<Vec<CardID>>(),
+        ),
+        Query::PriorityAction(actions) => Answer::PriorityAction(
+            actions
+                .choose(&mut thread_rng())
+                .expect("malformed query")
+                .clone(),
+        ),
+    };
+    assert!(validate_answer(query, &answer));
+    answer
+}
+
 #[derive(Debug)]
 struct User {
     name: String,
@@ -108,6 +153,8 @@ struct Game<'a> {
     stack: Vec<Spell>,
     battlefield: Vec<()>,
     attackers: Vec<()>,
+    maybe_query: Option<Query>,
+    maybe_answer: Option<Answer>,
     next_id: usize,
 }
 
@@ -124,6 +171,8 @@ impl<'a> Game<'a> {
             battlefield: Vec::new(),
             attackers: Vec::new(),
             next_id: 1001,
+            maybe_answer: None,
+            maybe_query: None,
         }
     }
 
@@ -136,6 +185,9 @@ impl<'a> Game<'a> {
 
 #[derive(Debug)]
 enum Message {
+    Query(Query),
+    RejectAnswer,
+    AcceptAnswer,
     CreatePlayer {
         id: PlayerID,
         name: String,
@@ -170,6 +222,21 @@ enum HandleError {
 impl<'a> MessageConsumer for Game<'a> {
     fn handle_message(&mut self, message: &Message) -> Result<(), HandleError> {
         match message {
+            Message::Query(query) => {
+                self.maybe_query = Some(query.clone());
+                self.maybe_answer = None;
+                Ok(())
+            }
+            Message::AcceptAnswer => {
+                self.maybe_query = None;
+                self.maybe_answer = None;
+                Ok(())
+            }
+            Message::RejectAnswer => {
+                self.maybe_query = None;
+                self.maybe_answer = None;
+                Ok(())
+            }
             Message::CreatePlayer { id, name } => {
                 if self.players.len() != *id {
                     Err(HandleError::PlayerIdError)
@@ -436,15 +503,29 @@ fn next_step(game: &Game) -> Vec<Message> {
                     let player = &game.players[game.active_player_id];
                     let number_to_discard = player.hand.len() as i32 - player.max_hand_size();
                     if number_to_discard > 0 {
-                        // msg.extend(Message::QueryPlayerAction(Action::Discard())
-                        msg.push(Message::Substep(Substep::EndOfStep));
+                        let query = Query::Discard(
+                            player.hand.iter().map(|c| c.id).collect(),
+                            number_to_discard,
+                        );
+                        match &game.maybe_answer {
+                            Some(answer) if validate_answer(&query, answer) => {
+                                msg.push(Message::AcceptAnswer);
+                                // todo: discard selected
+                                msg.push(Message::Substep(Substep::EndOfStep));
+                            }
+                            Some(_) => {
+                                msg.push(Message::RejectAnswer);
+                                msg.push(Message::Query(query));
+                            }
+                            _ => msg.push(Message::Query(query)),
+                        }
                     } else {
                         // all damage is removed
                         // until end of turn ends
                         msg.push(Message::Substep(Substep::EndOfStep));
                     }
                 }
-                _ => msg.push(Message::Substep(Substep::CheckStateBasedActions))
+                _ => msg.push(Message::Substep(Substep::CheckStateBasedActions)),
             }
         }
         _ => {
@@ -505,6 +586,10 @@ fn duel<'a>(
     while game.substep != Substep::GameEnded {
         for msg in next_step(&game) {
             game.handle_message(&msg).unwrap();
+            match &msg {
+                Message::Query(query) => game.maybe_answer = Some(random_answer(&query)),
+                _ => (),
+            }
             for consumer in &mut *consumers {
                 let _ = consumer.handle_message(&msg);
             }
