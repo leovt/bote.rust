@@ -210,6 +210,7 @@ enum Message {
     PlayerPasses(PlayerID),
     PriorityEnded,
     ResolveSpell(SpellID),
+    Discard(PlayerID, CardID),
 }
 
 #[derive(Debug)]
@@ -323,6 +324,15 @@ impl<'a> MessageConsumer for Game<'a> {
                 Some(spell) if spell.id == *sid => Ok(()),
                 _ => Err(HandleError::CardIdError),
             },
+            Message::Discard(pid, cid) => {
+                if let Some(i) = self.players[*pid].hand.iter().position(|c| c.id == *cid) {
+                    let card = self.players[*pid].hand.remove(i);
+                    self.players[*pid].graveyard.push(card);
+                    Ok(())
+                } else {
+                    Err(HandleError::CardIdError)
+                }
+            }
         }
     }
 }
@@ -508,9 +518,13 @@ fn next_step(game: &Game) -> Vec<Message> {
                             number_to_discard,
                         );
                         match &game.maybe_answer {
-                            Some(answer) if validate_answer(&query, answer) => {
+                            Some(answer @ Answer::Discard(card_ids))
+                                if validate_answer(&query, answer) =>
+                            {
                                 msg.push(Message::AcceptAnswer);
-                                // todo: discard selected
+                                for card_id in card_ids {
+                                    msg.push(Message::Discard(player.id, *card_id));
+                                }
                                 msg.push(Message::Substep(Substep::EndOfStep));
                             }
                             Some(_) => {
