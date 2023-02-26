@@ -40,9 +40,10 @@ impl MessageConsumer for MessageLogger {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum PriorityAction {
     Pass,
+    PlayLand(CardID),
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,9 @@ fn validate_answer(query: &Query, answer: &Answer) -> bool {
     match (query, answer) {
         (Query::Discard(cards, n), Answer::Discard(selected)) => {
             selected.len() as i32 == *n && selected.iter().all(|c| cards.contains(c))
+        }
+        (Query::PriorityAction(actions), Answer::PriorityAction(action)) => {
+            actions.contains(action)
         }
         _ => false,
     }
@@ -213,6 +217,7 @@ enum Message {
     PriorityEnded,
     ResolveSpell(SpellID),
     Discard(PlayerID, CardID),
+    //PlayLand(PlayerID, CardID, PermanentID),
 }
 
 #[derive(Debug)]
@@ -426,6 +431,24 @@ fn start_player_priority(game: &Game) -> Vec<Message> {
     msg
 }
 
+fn ask_query<'a>(game: &'a Game<'a>, msg: &mut Vec<Message>, query: Query) -> Option<&'a Answer> {
+    match &game.maybe_answer {
+        Some(answer) if validate_answer(&query, answer) => {
+            msg.push(Message::AcceptAnswer);
+            Some(answer)
+        }
+        Some(_) => {
+            msg.push(Message::RejectAnswer);
+            msg.push(Message::Query(query));
+            None
+        }
+        _ => {
+            msg.push(Message::Query(query));
+            None
+        }
+    }
+}
+
 fn next_step(game: &Game) -> Vec<Message> {
     let mut msg = Vec::new();
     match game.substep {
@@ -461,8 +484,13 @@ fn next_step(game: &Game) -> Vec<Message> {
                     msg.push(Message::PlayerHasPriority(next_player_id));
                 }
             } else {
-                // todo: ask player what they want to do
-                msg.push(Message::PlayerPasses(priority_player.id));
+                let query = Query::PriorityAction(vec![PriorityAction::Pass]);
+                if let Some(Answer::PriorityAction(action)) = ask_query(game, &mut msg, query) {
+                    match action {
+                        PriorityAction::Pass => msg.push(Message::PlayerPasses(priority_player.id)),
+                        _ => msg.push(Message::PlayerPasses(priority_player.id)),
+                    }
+                }
             }
         }
         Substep::ResolveStack => match game.stack.last() {
@@ -519,21 +547,11 @@ fn next_step(game: &Game) -> Vec<Message> {
                             player.hand.iter().map(|c| c.id).collect(),
                             number_to_discard,
                         );
-                        match &game.maybe_answer {
-                            Some(answer @ Answer::Discard(card_ids))
-                                if validate_answer(&query, answer) =>
-                            {
-                                msg.push(Message::AcceptAnswer);
-                                for card_id in card_ids {
-                                    msg.push(Message::Discard(player.id, *card_id));
-                                }
-                                msg.push(Message::Substep(Substep::EndOfStep));
+                        if let Some(Answer::Discard(card_ids)) = ask_query(&game, &mut msg, query) {
+                            for card_id in card_ids {
+                                msg.push(Message::Discard(player.id, *card_id));
                             }
-                            Some(_) => {
-                                msg.push(Message::RejectAnswer);
-                                msg.push(Message::Query(query));
-                            }
-                            _ => msg.push(Message::Query(query)),
+                            msg.push(Message::Substep(Substep::EndOfStep));
                         }
                     } else {
                         // all damage is removed
