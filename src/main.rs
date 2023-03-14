@@ -7,6 +7,8 @@ mod card;
 use rand::seq::SliceRandom; // Vec.shuffle
 use rand::thread_rng;
 
+use std::collections::HashMap;
+
 fn main() {
     let d1 = card::Deck(vec![(101, 10)]);
     let d2 = card::Deck(vec![(101, 10)]);
@@ -95,30 +97,59 @@ struct User {
 }
 
 type CardID = usize;
+type PublicCardID = usize;
 
 #[derive(Debug)]
 struct Card<'a> {
     id: CardID,
+    public_id: PublicCardID,
+    object_id: Option<ObjectID>,
     owner_id: PlayerID,
     definition: &'a CardDefinition,
 }
 
+type ObjectID = usize;
+
+#[derive(Debug)]
+struct Object {
+    // controller
+    id: ObjectID,
+    kind: ObjectKind,
+    location: ObjectLocation,
+}
+
+#[derive(Debug)]
+enum ObjectLocation {
+    Library,
+    Hand,
+    Stack,
+    Battlefield,
+    Graveyard,
+}
+
+#[derive(Debug)]
+enum ObjectKind {
+    Card(CardID),
+    ActivatedAbility(CardID, usize),
+}
+
 type PlayerID = usize;
 #[derive(Debug)]
-struct Player<'a> {
+struct Player {
     id: PlayerID,
     name: String,
-    library: Vec<Card<'a>>,
-    hand: Vec<Card<'a>>,
-    graveyard: Vec<Card<'a>>,
+    library: Vec<CardID>,
+    hand: Vec<CardID>,
+    graveyard: Vec<CardID>,
     has_drawn_from_empty: bool,
     has_lost: bool,
     has_passed: bool,
     life: i32,
+    lands_played: u32,
 }
 
-impl<'a> Player<'a> {
-    fn new(id: PlayerID, name: String) -> Player<'a> {
+impl Player {
+    fn new(id: PlayerID, name: String) -> Player {
         Player {
             id: id,
             name: name,
@@ -129,6 +160,7 @@ impl<'a> Player<'a> {
             has_lost: false,
             has_passed: false,
             life: 20,
+            lands_played: 0,
         }
     }
 
@@ -150,33 +182,33 @@ impl Spell {
 
 #[derive(Debug)]
 struct Game<'a> {
-    players: Vec<Player<'a>>,
+    cards: HashMap<CardID, Card<'a>>,
+    players: Vec<Player>,
     substep: Substep,
     step: Step,
     active_player_id: usize,
     priority_player_id: usize,
     card_repository: &'a card::CardRepository,
     stack: Vec<Spell>,
-    battlefield: Vec<()>,
-    attackers: Vec<()>,
     maybe_query: Option<Query>,
     maybe_answer: Option<Answer>,
     next_id: usize,
+    objects: HashMap<ObjectID, Object>,
 }
 
 impl<'a> Game<'a> {
     fn new(card_repository: &'a card::CardRepository) -> Game {
         Game {
-            players: vec![],
+            cards: HashMap::new(),
+            players: Vec::new(),
             substep: Substep::InitialShuffle,
             step: Step::Untap,
             active_player_id: 0,
             priority_player_id: 0,
             card_repository: card_repository,
             stack: Vec::new(),
-            battlefield: Vec::new(),
-            attackers: Vec::new(),
             next_id: 1001,
+            objects: HashMap::new(),
             maybe_answer: None,
             maybe_query: None,
         }
@@ -186,6 +218,11 @@ impl<'a> Game<'a> {
         let res = self.next_id;
         self.next_id += 1;
         res
+    }
+
+    fn commit_id(&mut self, id: usize) {
+        assert!(id >= self.next_id);
+        self.next_id = id;
     }
 }
 
@@ -217,7 +254,7 @@ enum Message {
     PriorityEnded,
     ResolveSpell(SpellID),
     Discard(PlayerID, CardID),
-    //PlayLand(PlayerID, CardID, PermanentID),
+    PlayLand(PlayerID, CardID, ObjectID),
 }
 
 #[derive(Debug)]
@@ -262,10 +299,13 @@ impl<'a> MessageConsumer for Game<'a> {
                 Some(definition) => {
                     let card = Card {
                         id: *id,
+                        public_id: 0,
                         owner_id: *owner_id,
+                        object_id: None,
                         definition: definition,
                     };
-                    self.players[*owner_id].library.push(card);
+                    self.cards.insert(*id, card);
+                    self.players[*owner_id].library.push(*id);
                     Ok(())
                 }
                 None => Err(HandleError::CardDefIdError),
@@ -280,6 +320,7 @@ impl<'a> MessageConsumer for Game<'a> {
             }
             Message::BeginTurn(pid) => {
                 self.active_player_id = *pid;
+                self.players[*pid].lands_played = 0;
                 Ok(())
             }
             Message::GetPriority(pid) => {
@@ -291,9 +332,9 @@ impl<'a> MessageConsumer for Game<'a> {
                 Ok(())
             }
             Message::DrawCard(pid, cid) => match self.players[*pid].library.pop() {
-                Some(card) => {
-                    if card.id == *cid {
-                        self.players[*pid].hand.push(card);
+                Some(card_id) => {
+                    if card_id == *cid {
+                        self.players[*pid].hand.push(card_id);
                         Ok(())
                     } else {
                         Err(HandleError::CardIdError)
@@ -332,9 +373,25 @@ impl<'a> MessageConsumer for Game<'a> {
                 _ => Err(HandleError::CardIdError),
             },
             Message::Discard(pid, cid) => {
-                if let Some(i) = self.players[*pid].hand.iter().position(|c| c.id == *cid) {
-                    let card = self.players[*pid].hand.remove(i);
-                    self.players[*pid].graveyard.push(card);
+                if let Some(i) = self.players[*pid].hand.iter().position(|c| *c == *cid) {
+                    let card_id = self.players[*pid].hand.remove(i);
+                    self.players[*pid].graveyard.push(card_id);
+                    Ok(())
+                } else {
+                    Err(HandleError::CardIdError)
+                }
+            }
+            Message::PlayLand(pid, cid, oid) => {
+                if let Some(i) = self.players[*pid].hand.iter().position(|c| *c == *cid) {
+                    let card_id = self.players[*pid].hand.remove(i);
+                    self.commit_id(*oid);
+                    let object = Object {
+                        id: *oid,
+                        kind: ObjectKind::Card(card_id),
+                        location: ObjectLocation::Battlefield,
+                    };
+                    self.players[*pid].lands_played += 1;
+                    self.objects.insert(*oid, object);
                     Ok(())
                 } else {
                     Err(HandleError::CardIdError)
@@ -357,7 +414,7 @@ enum Substep {
     GameEnded,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Untap,
     Upkeep,
@@ -379,8 +436,8 @@ fn try_draw_cards(player: &Player, count: usize) -> Vec<Message> {
     let n = player.library.len();
     for i in 0..count {
         if i < n {
-            let card = &player.library[n - 1 - i];
-            msg.push(Message::DrawCard(player.id, card.id));
+            let card_id = player.library[n - 1 - i];
+            msg.push(Message::DrawCard(player.id, card_id));
         } else {
             msg.push(Message::DrawFromEmpty(player.id));
             break;
@@ -391,7 +448,7 @@ fn try_draw_cards(player: &Player, count: usize) -> Vec<Message> {
 
 fn try_draw_card(player: &Player) -> Message {
     match player.library.last() {
-        Some(card) => Message::DrawCard(player.id, card.id),
+        Some(card_id) => Message::DrawCard(player.id, *card_id),
         None => Message::DrawFromEmpty(player.id),
     }
 }
@@ -484,11 +541,27 @@ fn next_step(game: &Game) -> Vec<Message> {
                     msg.push(Message::PlayerHasPriority(next_player_id));
                 }
             } else {
-                let query = Query::PriorityAction(vec![PriorityAction::Pass]);
+                let mut actions = vec![PriorityAction::Pass];
+                if (game.step == Step::PrecombatMain || game.step == Step::PostcombatMain)
+                    && game.active_player_id == game.priority_player_id
+                {
+                    if priority_player.lands_played < 1 {
+                        for card_id in priority_player.hand.iter() {
+                            if game.cards[card_id].definition.mechanics.is_land {
+                                actions.push(PriorityAction::PlayLand(*card_id));
+                            }
+                        }
+                    }
+                }
+                let query = Query::PriorityAction(actions);
                 if let Some(Answer::PriorityAction(action)) = ask_query(game, &mut msg, query) {
                     match action {
                         PriorityAction::Pass => msg.push(Message::PlayerPasses(priority_player.id)),
-                        _ => msg.push(Message::PlayerPasses(priority_player.id)),
+                        PriorityAction::PlayLand(cid) => msg.push(Message::PlayLand(
+                            game.priority_player_id,
+                            *cid,
+                            game.next_id,
+                        )),
                     }
                 }
             }
@@ -504,7 +577,13 @@ fn next_step(game: &Game) -> Vec<Message> {
         },
         Substep::EndOfStep => {
             // todo: empty mana pool
+
             use Step::*;
+            if game.step == Cleanup {
+                msg.push(Message::BeginTurn(
+                    (game.active_player_id + 1) % game.players.len(),
+                ));
+            }
             msg.push(Message::Step(match game.step {
                 Untap => Upkeep,
                 Upkeep => Draw,
@@ -512,7 +591,9 @@ fn next_step(game: &Game) -> Vec<Message> {
                 PrecombatMain => BeginCombat,
                 BeginCombat => DeclareAttackers,
                 DeclareAttackers => {
-                    if game.attackers.len() > 0 {
+                    if false
+                    /* attackers declared ? */
+                    {
                         DeclareBlockers
                     } else {
                         EndOfCombat
@@ -543,10 +624,7 @@ fn next_step(game: &Game) -> Vec<Message> {
                     let player = &game.players[game.active_player_id];
                     let number_to_discard = player.hand.len() as i32 - player.max_hand_size();
                     if number_to_discard > 0 {
-                        let query = Query::Discard(
-                            player.hand.iter().map(|c| c.id).collect(),
-                            number_to_discard,
-                        );
+                        let query = Query::Discard(player.hand.clone(), number_to_discard);
                         if let Some(Answer::Discard(card_ids)) = ask_query(&game, &mut msg, query) {
                             for card_id in card_ids {
                                 msg.push(Message::Discard(player.id, *card_id));

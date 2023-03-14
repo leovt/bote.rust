@@ -10,18 +10,19 @@ pub type CardDefID = usize;
 /// the display part is visual
 #[derive(Debug)]
 pub struct CardDefinition {
-    id: CardDefID,
-    mechanics: CardMechanics,
-    display: CardDisplay,
+    pub id: CardDefID,
+    pub mechanics: CardMechanics,
+    pub display: CardDisplay,
 }
 
 #[derive(Debug)]
-struct CardMechanics {
-    is_token: bool,
+pub struct CardMechanics {
+    pub is_token: bool,
+    pub is_land: bool,
 }
 
 #[derive(Debug)]
-struct CardDisplay();
+pub struct CardDisplay();
 
 pub type CardRepository = HashMap<CardDefID, CardDefinition>;
 pub fn load_cards() -> CardRepository {
@@ -29,7 +30,7 @@ pub fn load_cards() -> CardRepository {
         101,
         CardDefinition {
             id: 101,
-            mechanics: CardMechanics { is_token: false },
+            mechanics: CardMechanics { is_token: false, is_land: true},
             display: CardDisplay(),
         },
     )])
